@@ -1,0 +1,14 @@
+services:
+  webserv-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: webserv-dev
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8080:8080"
+    stdin_open: true
+    tty: true
+    command: ["bash", "-lc", "sleep infinity"]

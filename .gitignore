@@ -1,0 +1,12 @@
+# Build outputs
+/webserv
+/obj/
+
+# Test build outputs
+/tests/network/bin/
+/tests/network/obj/
+/tests/src/
+/tests/tests/
+
+# Generic
+*.o

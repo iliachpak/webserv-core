@@ -1,0 +1,6 @@
+.git
+.gitignore
+obj
+webserv
+tests/network/obj
+tests/network/bin
