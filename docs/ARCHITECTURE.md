@@ -1,18 +1,23 @@
-# 📄 ARCHITECTURE.md
+# ARCHITECTURE.md
 
 # Architecture Overview
 
-This document describes the internal architecture of the webserv-core HTTP server.
+This document describes the architecture of a modular HTTP server implemented in C++, designed around a **single-threaded, event-driven model** using `epoll` (Linux) with a `poll` fallback for portability.
 
-The system is designed around a single-threaded event-driven model using epoll (Linux) or poll (fallback) for I/O multiplexing.
+The system emphasizes:
+
+* deterministic execution
+* low-overhead I/O handling
+* clear separation of concerns
+* extensibility toward performance-oriented improvements
 
 ---
 
-# 🧠 High-Level Design
+# High-Level Architecture
 
-The architecture follows a **reactor pattern**:
+The server follows a **Reactor pattern**, where I/O events are multiplexed and dispatched through a central event loop:
+
 ```
-
         ┌──────────────┐
         │   main.cc    │
         └──────┬───────┘
@@ -37,208 +42,241 @@ The architecture follows a **reactor pattern**:
       │
       ▼
   HttpResponse
-
 ```
+
+This design enables efficient handling of multiple concurrent connections using non-blocking I/O.
+
 ---
 
-# 🔁 Event Loop Model
+# Event Loop Model
 
-The EventLoop is the central component of the system.
+The `EventLoop` is the core execution unit of the server.
 
-It is responsible for:
+Responsibilities include:
 
-- Waiting for I/O events using `Poller`
-- Dispatching events to the appropriate handlers
-- Managing server sockets and client connections
-- Coordinating lifecycle of connections
+* waiting for I/O events via the `Poller`
+* dispatching events to connection handlers
+* managing lifecycle of connections
+* coordinating read/write operations
 
-The loop runs in a single thread:
+Execution model:
 
 ```cpp
 while (running)
     runOnce(timeout);
 ```
-This design ensures deterministic execution and avoids concurrency complexity.
+
+### Design Rationale
+
+* **Single-threaded execution** avoids synchronization overhead (locks, contention)
+* **Deterministic control flow** simplifies reasoning and debugging
+* **Low-latency potential** by minimizing context switching and thread scheduling
+
+This model is inspired by high-performance network servers where predictable latency is preferred over parallel complexity.
 
 ---
 
-# ⚡ Poller Abstraction
+# Poller Abstraction
 
-The Poller component abstracts OS-level I/O multiplexing:
+The `Poller` provides a thin abstraction over OS-level I/O multiplexing mechanisms:
 
-- Uses epoll on Linux
-- Uses poll as fallback
+* `epoll` (Linux) for scalable event notification
+* `poll` as a portable fallback
 
 Responsibilities:
 
-- Register file descriptors
-- Modify interest (read/write events)
-- Remove file descriptors
-- Wait for events and translate them into `NetworkEvent`
+* registering file descriptors
+* updating interest masks (read/write)
+* removing descriptors
+* translating OS events into internal `NetworkEvent` objects
 
-This abstraction allows the system to remain portable while maintaining a consistent event model.
+### Design Goals
+
+* isolate platform-specific logic
+* allow future extensions (e.g., kqueue)
+* keep event handling consistent across backends
 
 ---
 
-# 🔌 Connection Model
+# Connection Model
 
-Each client connection is represented by a `Connection` object.
+Each client is represented by a `Connection` object.
 
-A Connection contains:
+A connection encapsulates:
 
-- Socket file descriptor
-- Read buffer
-- Write buffer
-- State flags (read/write interest, closed state)
+* socket file descriptor
+* input/output buffers
+* connection state (read/write readiness, closed state)
 
 Responsibilities:
 
-- Reading incoming data
-- Storing partially received requests
-- Writing responses back to the client
-- Tracking connection state
+* incremental reading from socket
+* buffering partial requests
+* writing responses asynchronously
+* managing connection lifecycle
+
+### Notes
+
+The design supports:
+
+* non-blocking I/O
+* partial reads/writes
+* persistent connections (keep-alive)
 
 ---
 
-# 🌐 HTTP Layer
-
-The HTTP layer is composed of:
+# HTTP Layer
 
 ## HttpParser
 
-Responsible for parsing raw TCP input into structured HTTP requests.
+Transforms raw TCP streams into structured HTTP requests.
 
 Features:
 
-- Request line parsing
-- Header parsing
-- Content-Length handling
-- Keep-alive detection
+* request line parsing
+* header parsing
+* Content-Length handling
+* keep-alive detection
+
+The parser operates incrementally, allowing partial buffer processing.
+
+---
 
 ## HttpService
 
-Implements routing logic based on:
+Implements application-level logic:
 
-- HTTP method
-- Request target
+* routing based on method and path
+* generation of `HttpResponse`
 
-It produces an `HttpResponse` based on predefined rules.
-
----
-
-# 🔄 Request Flow
-
-The full request lifecycle is:
-
-1. Client connects to server socket  
-2. EventLoop receives accept event  
-3. Connection object is created  
-4. Connection is registered in Poller  
-5. Data arrives → read event triggered  
-6. HttpParser processes buffer  
-7. HttpService generates response  
-8. Response is written back  
-9. Connection is closed or reused (keep-alive)
+This layer is intentionally minimal and modular, allowing extension without impacting the networking core.
 
 ---
 
-# ⚙️ Design Decisions
+# Request Lifecycle
 
-## Single-threaded model
-
-The system uses a single event loop to avoid:
-
-- race conditions
-- locking overhead
-- thread synchronization complexity
-
-This simplifies the design while still allowing high concurrency via non-blocking I/O.
-
----
-
-## Epoll-based multiplexing
-
-epoll is used on Linux for efficient scalability with large numbers of file descriptors.
-
-A poll fallback is provided for portability.
+1. Client connects → accept event
+2. `Connection` object is created
+3. File descriptor registered in `Poller`
+4. Read event triggered
+5. Data buffered and parsed (`HttpParser`)
+6. Request handled (`HttpService`)
+7. Response generated
+8. Write event triggered
+9. Connection closed or reused (keep-alive)
 
 ---
 
-## Separation of concerns
+# Design Principles
 
-The architecture is divided into:
+## Separation of Concerns
 
-- Network layer (EventLoop, Poller)
-- Protocol layer (HTTP parsing and routing)
-- Application layer (main entry point)
+The system is structured into distinct layers:
 
-This improves readability and maintainability.
+* **Network layer** → EventLoop, Poller, Connection
+* **Protocol layer** → HTTP parsing
+* **Application layer** → request handling
 
---- 
-
-# ⚖️ Trade-offs
-
-## Simplicity over performance tuning
-
-The implementation prioritizes clarity over:
-
-- zero-copy parsing
-- custom allocators
-- advanced buffering strategies
-
-## No multi-threading
-
-The system is intentionally single-threaded to reduce complexity.
-
-## Basic HTTP implementation
-
-Only a minimal subset of HTTP is supported.
+This improves maintainability and allows independent evolution of components.
 
 ---
 
-# 📌 Current Status & Future Improvements
+## Event-Driven Design
 
-This project is intentionally kept in a **minimal and modular state** in order to focus on the core concepts of event-driven networking and HTTP processing.
+* avoids blocking operations
+* scales with number of file descriptors
+* enables efficient concurrency without threads
+
+---
+
+## Deterministic Execution
+
+* no shared-state concurrency
+* predictable control flow
+* easier debugging and profiling
+
+---
+
+# Trade-offs
+
+## Single-threaded architecture
+
+Pros:
+
+* no locking overhead
+* simpler reasoning
+* predictable latency characteristics
+
+Cons:
+
+* limited CPU parallelism
+* requires careful design for scalability
+
+---
+
+## Minimal HTTP implementation
+
+The HTTP layer is intentionally lightweight:
+
+* focuses on correctness and integration
+* avoids premature complexity
+
+---
+
+## Performance Scope
 
 The current implementation prioritizes:
-- clarity of the reactor pattern (epoll/poll-based event loop)
-- separation between network handling and HTTP logic
-- a minimal HTTP layer to demonstrate full request/response connectivity
 
-As a result, the HTTP module remains intentionally simple, serving primarily as a proof of integration rather than a fully-featured web framework.
+* architectural clarity
+* correctness
+* modularity
 
----
-
-## Planned Improvements
-
-Several areas have been identified for future development:
-
-- **Low-latency optimized design**
-  (reduction of syscall overhead, improved event batching, tighter loop control)
-
-- **Memory-pool / zero-allocation mindset**
-  (reducing dynamic allocations in the connection and HTTP processing layers)
-
-- **Production-grade separation of concerns**
-  (stronger isolation between parsing, routing, and network layers)
+Advanced optimizations (zero-copy, custom allocators, etc.) are **intentionally deferred**.
 
 ---
 
-## Future Extensions
+# Performance Considerations & Future Work
 
-Once the core networking and HTTP modules are further optimized, the architecture could be extended toward a more complete server model, including:
+The architecture is designed to support further performance-oriented improvements:
 
-- **Session management layer**
-  (connection persistence, state tracking, user/session abstraction)
+### I/O & Event Loop
 
-- **Configuration system**
-  (runtime or file-based server configuration similar to Nginx-style setups)
+* reduce syscall overhead (event batching)
+* tighter event loop control (reduced indirection)
+* improved readiness handling
 
-These extensions would progressively move the project closer to a fully configurable, production-like HTTP server architecture.
+### Memory Management
+
+* reduce dynamic allocations in hot paths
+* introduce memory pooling strategies
+* improve cache locality of connection structures
+
+### Networking
+
+* optimize buffer management
+* explore zero-copy techniques
+* refine write batching
 
 ---
 
-## Design Philosophy
+# Possible Extensions
 
-The current state of the project reflects a deliberate learning-oriented approach:
-build a minimal but complete system first, then progressively optimize and extend it toward production-level constraints.
+The current design can be extended toward a more complete server:
+
+* configuration system (Nginx-style)
+* session management
+* routing abstraction
+* middleware pipeline
+
+---
+
+# Design Philosophy
+
+This project follows a staged approach:
+
+1. Build a correct, minimal, end-to-end system
+2. Ensure architectural clarity and modularity
+3. Identify performance-critical paths
+4. Incrementally optimize toward low-latency constraints
+
+This methodology reflects real-world system design, where correctness and structure precede aggressive optimization.
